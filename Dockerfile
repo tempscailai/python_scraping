@@ -1,21 +1,31 @@
 FROM python:3.11-slim
+
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y wget gnupg unzip && \
-    wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - && \
-    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" \
-        > /etc/apt/sources.list.d/google-chrome.list && \
-    apt-get update && apt-get install -y google-chrome-stable && \
-    CHROME_DRIVER_VERSION=$(wget -qO- https://chromedriver.storage.googleapis.com/LATEST_RELEASE) && \
+# Install system deps
+RUN apt-get update && apt-get install -y wget gnupg unzip curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Google Chrome Repository Fix (no apt-key)
+RUN mkdir -p /usr/share/keyrings && \
+    curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+    | gpg --dearmor -o /usr/share/keyrings/google-linux.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+      > /etc/apt/sources.list.d/google-chrome.list
+
+# Install Chrome + ChromeDriver
+RUN apt-get update && apt-get install -y google-chrome-stable && \
+    CHROME_DRIVER_VERSION=$(curl -sS https://chromedriver.storage.googleapis.com/LATEST_RELEASE) && \
     wget -q "https://chromedriver.storage.googleapis.com/${CHROME_DRIVER_VERSION}/chromedriver_linux64.zip" && \
-    unzip chromedriver_linux64.zip -d /usr/local/bin/ && \
+    unzip chromedriver_linux64.zip -d /usr/local/bin && rm chromedriver_linux64.zip && \
     chmod +x /usr/local/bin/chromedriver && \
-    rm chromedriver_linux64.zip && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY scraper.py /app/scraper.py
-COPY requirements.txt /app/requirements.txt
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-CMD ["python3", "/app/scraper.py"]
+
+COPY scraper.py .
+
+CMD ["python3", "scraper.py"]
