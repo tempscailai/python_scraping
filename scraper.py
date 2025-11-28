@@ -489,3 +489,11 @@ if __name__ == "__main__":
     
     print(f"\n Starting scrape for: {url}\n", file=sys.stderr)
     scrape_site(url)
+    
+import os
+def run():
+    url = os.environ.get("SCRAPE_URL")
+    if not url:
+        return {"error": "SCRAPE_URL environment variable not provided"}
+    
+    return scrape_site(url)

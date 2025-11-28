@@ -1,13 +1,19 @@
 import os
-from flask import Flask
-import scraper  # your scraper logic in a separate file
+from flask import Flask, request, jsonify
+import scraper
 
 app = Flask(__name__)
 
 @app.route("/")
-def run_scraper():
-    result = scraper.run()   # call your real scraper
-    return {"status": "ok", "result": result}
+def run():
+    url = request.args.get("url")
+    if not url:
+        return jsonify({
+            "error": "Please pass ?url=https://sitename.com to scrape"
+        }), 400
+
+    result = scraper.scrape_site(url)
+    return jsonify({"status": "ok", "result": result})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
