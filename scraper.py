@@ -12,15 +12,6 @@ try:
 except ImportError:
     USE_CLOUDSCRAPER = False
 
-try:
-    from selenium import webdriver
-    from selenium.webdriver.chrome.service import Service
-    from selenium.webdriver.chrome.options import Options
-    from webdriver_manager.chrome import ChromeDriverManager
-    SELENIUM_AVAILABLE = True
-except ImportError:
-    SELENIUM_AVAILABLE = False
-
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -35,19 +26,25 @@ def detect_category_page(base_url):
     # Common e-commerce paths
     possible_paths = [
         "/shop/", "/store/", "/products/", "/collections/all/",
-        "/category/", "/product-category/", "/catalog/", "/All-products/"
+        "/category/", "/product-category/", "/catalog/",
         "/all-products/", "/shop-all/", "/items/", "/Shop By Categories/",
         "/browse/", "/search/", "/all/", "/all-products/", "/all-categories/", "/Shop by Category/", "/Collections/"
     ]
+    
+    print("Searching for product pages...", file=sys.stderr)
     
     for path in possible_paths:
         test_url = urljoin(base_url, path)
         try:
             r = requests.get(test_url, headers=HEADERS, timeout=10)
             if r.status_code == 200 and "product" in r.text.lower():
+                print(f"Found product page: {test_url}", file=sys.stderr)
                 return test_url
         except requests.RequestException:
             continue
+    
+    # If no specific path works, try the homepage
+    print("No specific product page found, trying homepage...", file=sys.stderr)
     return base_url
 
 
@@ -69,6 +66,7 @@ def get_product_links_from_sitemap(base_url, visited=None):
         visited.add(sitemap_url)
         
         try:
+            print(f"Checking sitemap: {sitemap_url}", file=sys.stderr)
             resp = requests.get(sitemap_url, headers=HEADERS, timeout=10)
             if resp.status_code == 200:
                 root = ET.fromstring(resp.content)
@@ -89,29 +87,12 @@ def get_product_links_from_sitemap(base_url, visited=None):
                     # Match various e-commerce URL patterns
                     if any(pattern in url_text.lower() for pattern in [
                         '/product/', '/products/', '/p/', '/item/', '/items/',
-                        '/shop/', '/store/', '.html', '/buy/', '/pd/', '/myproducts/',
+                        '/shop/', '/store/', '.html', '/buy/', '/pd/'
                     ]):
                         product_links.add(url_text)
                 
-                # If no products found with standard patterns, try category-based patterns
-                # Common for sites like earthytales.in that use /vegetables/, /fruits/, etc.
-                if not product_links:
-                    for url in urls:
-                        url_text = url.text
-                        # Exclude common non-product pages
-                        exclude_patterns = [
-                            '/blog', '/about', '/contact', '/faq', '/policy', '/policies',
-                            '/terms', '/privacy', '/cart', '/checkout', '/account', '/login',
-                            '/register', '/my-', '/testimonial', '/team', '/story', '/refer',
-                            '/sitemap', '/search', '/tag', '/category', '/collection'
-                        ]
-                        # Check if URL has a path (not just homepage) and doesn't match exclude patterns
-                        path = url_text.replace(base_url, '').strip('/')
-                        if path and '/' in url_text and not any(ex in url_text.lower() for ex in exclude_patterns):
-                            # Likely a product page
-                            product_links.add(url_text)
-                
                 if product_links:
+                    print(f"Found {len(product_links)} products in sitemap", file=sys.stderr)
                     return product_links
         except Exception:
             continue
@@ -119,195 +100,71 @@ def get_product_links_from_sitemap(base_url, visited=None):
     return product_links
 
 
-def detect_js_framework(html_content):
-    """Detect if page uses JavaScript frameworks."""
-    html_lower = html_content.lower()
-    frameworks = {
-        'react': 'react' in html_lower or '__react' in html_lower or 'reactdom' in html_lower,
-        'vue': 'vue' in html_lower or '__vue' in html_lower or 'vue.js' in html_lower,
-        'angular': 'angular' in html_lower or 'ng-' in html_lower or '@angular' in html_lower,
-        'nextjs': '__next' in html_lower or 'next.js' in html_lower or '_next' in html_lower,
-    }
-    return any(frameworks.values()), frameworks
-
-
-def get_product_links(category_url, driver=None, max_pages=10):
-    """Collect product URLs from page (supports ALL e-commerce platforms including JS frameworks)."""
+def get_product_links(category_url):
+    """Collect product URLs from page (supports ALL e-commerce platforms)."""
     product_links = set()
-    visited_pages = set()
-    pages_to_visit = [category_url]
-    
-    while pages_to_visit and len(visited_pages) < max_pages:
-        current_url = pages_to_visit.pop(0)
-        if current_url in visited_pages:
-            continue
-        visited_pages.add(current_url)
+    try:
+        resp = requests.get(category_url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Universal selectors for all e-commerce platforms
+        selectors = [
+            "a.woocommerce-LoopProduct-link",  # WooCommerce
+            "a.product-item-link",  # Magento
+            "a.product-link",  # Generic
+            "a[href*='/product/']",  # Generic product URLs
+            "a[href*='/products/']",  # Shopify
+            "a[href*='/p/']",  # Short product URLs
+            "a[href*='/item/']",  # Item URLs
+            "a[href*='/pd/']",  # Product detail URLs
+            ".product-item a",  # Product item links
+            ".product a",  # Product links
+            "article.product a",  # Article-based products
+            "[itemtype*='Product'] a",  # Schema.org markup
+            ".grid-product a",  # Grid layouts
+            ".product-card a",  # Card layouts
+        ]
         
-        try:
-            # First try with regular requests
-            resp = requests.get(current_url, headers=HEADERS, timeout=10)
-            html_content = resp.text
-            soup = BeautifulSoup(html_content, "html.parser")
-
-            # Universal selectors for all e-commerce platforms
-            selectors = [
-                "a.woocommerce-LoopProduct-link",  # WooCommerce
-                "a.product-item-link",  # Magento
-                "a.product-link",  # Generic
-                "a[href*='/product/']",  # Generic product URLs
-                "a[href*='/products/']",  # Shopify
-                "a[href*='/p/']",  # Short product URLs
-                "a[href*='/item/']",  # Item URLs
-                "a[href*='/pd/']",  # Product detail URLs
-                ".product-item a",  # Product item links
-                ".product a",  # Product links
-                "article.product a",  # Article-based products
-                "[itemtype*='Product'] a",  # Schema.org markup
-                ".grid-product a",  # Grid layouts
-                ".product-card a",  # Card layouts
-            ]
-            
-            # URL patterns to match (including limeroad pattern: -p followed by digits and /scrap/)
-            url_patterns = ['/product/', '/products/', '/p/', '/item/', '/items/', '/pd/', '/shop/', '.html', r'-p\d+', '/scrap/']
-            
-            # Get the base domain to filter out external links
-            from urllib.parse import urlparse
-            base_domain = urlparse(current_url).netloc
-            
-            for selector in selectors:
-                links = soup.select(selector)
-                for a in links:
-                    href = a.get("href")
-                    if href and any(pattern in href.lower() for pattern in url_patterns):
-                        full_url = urljoin(current_url, href)
-                        # Only add if it's from the same domain
-                        if urlparse(full_url).netloc == base_domain:
+        # URL patterns to match
+        url_patterns = ['/product/', '/products/', '/p/', '/item/', '/items/', '/pd/', '/shop/', '.html']
+        
+        # Get the base domain to filter out external links
+        from urllib.parse import urlparse
+        base_domain = urlparse(category_url).netloc
+        
+        for selector in selectors:
+            links = soup.select(selector)
+            for a in links:
+                href = a.get("href")
+                if href and any(pattern in href.lower() for pattern in url_patterns):
+                    full_url = urljoin(category_url, href)
+                    # Only add if it's from the same domain
+                    if urlparse(full_url).netloc == base_domain:
+                        product_links.add(full_url)
+        
+        # If no products found with selectors, try finding ANY links with product patterns
+        if not product_links:
+            print("🔍 Trying broader search for product links...", file=sys.stderr)
+            for a in soup.find_all('a', href=True):
+                href = a.get('href')
+                if href and any(pattern in href.lower() for pattern in url_patterns):
+                    full_url = urljoin(category_url, href)
+                    # Only add if it's from the same domain
+                    if urlparse(full_url).netloc == base_domain:
+                        # Avoid navigation/category links
+                        if not any(skip in href.lower() for skip in ['category', 'collection', 'tag', 'page', 'cart', 'checkout', 'account']):
                             product_links.add(full_url)
-            
-            # If no products found with selectors, check if it's a JS framework site
-            if not product_links:
-                uses_js, frameworks = detect_js_framework(html_content)
+        
+        next_selectors = ["a.next", ".pagination a[rel='next']", "a[aria-label='Next']"]
+        for selector in next_selectors:
+            next_link = soup.select_one(selector)
+            if next_link:
+                next_url = urljoin(category_url, next_link.get("href"))
+                product_links.update(get_product_links(next_url))
+                break
                 
-                if uses_js and SELENIUM_AVAILABLE:
-                    detected = [name for name, found in frameworks.items() if found]
-                    
-                    # Create driver if not provided
-                    if driver is None:
-                        chrome_options = Options()
-                        chrome_options.add_argument('--headless')
-                        chrome_options.add_argument('--no-sandbox')
-                        chrome_options.add_argument('--disable-dev-shm-usage')
-                        chrome_options.add_argument('--disable-gpu')
-                        chrome_options.add_argument('--window-size=1920,1080')
-                        chrome_options.add_argument(f'user-agent={HEADERS["User-Agent"]}')
-                        
-                        # Stealth mode to avoid bot detection
-                        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-                        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-                        chrome_options.add_experimental_option('useAutomationExtension', False)
-                        
-                        try:
-                            from selenium import webdriver
-                            from selenium.webdriver.chrome.service import Service
-                            from selenium.webdriver.support.ui import WebDriverWait
-                            from selenium.webdriver.support import expected_conditions as EC
-                            from selenium.webdriver.common.by import By
-                            from webdriver_manager.chrome import ChromeDriverManager
-                            
-                            service = Service(ChromeDriverManager().install())
-                            driver = webdriver.Chrome(service=service, options=chrome_options)
-                            driver.set_page_load_timeout(60)
-                            should_quit_driver = True
-                        except Exception as e:
-                            driver = None
-                            should_quit_driver = False
-                    else:
-                        should_quit_driver = False
-                    
-                    if driver:
-                        try:
-                            from selenium.webdriver.support.ui import WebDriverWait
-                            from selenium.webdriver.support import expected_conditions as EC
-                            from selenium.webdriver.common.by import By
-                            
-                            driver.get(current_url)
-                            
-                            # Wait for product links to appear (up to 20 seconds)
-                            try:
-                                wait = WebDriverWait(driver, 20)
-                                wait.until(EC.presence_of_element_located((
-                                    By.CSS_SELECTOR, 
-                                    "a[href*='/product/'], a[href*='/scrap/'], a[href*='/p/'], .product-item a, .product a"
-                                )))
-                            except:
-                                pass
-                            
-                            # Additional wait for AJAX calls
-                            time.sleep(10)
-                            
-                            # Scroll to trigger lazy loading
-                            driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
-                            time.sleep(2)
-                            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                            time.sleep(3)
-                            driver.execute_script("window.scrollTo(0, 0);")
-                            time.sleep(2)
-                            
-                            html_content = driver.page_source
-                            soup = BeautifulSoup(html_content, "html.parser")
-                        except Exception as e:
-                            pass
-                        finally:
-                            if should_quit_driver:
-                                driver.quit()
-
-                for a in soup.find_all('a', href=True):
-                    href = a.get('href')
-                    # Use regex for -p\d+ pattern
-                    import re
-                    has_pattern = (any(pattern in href.lower() for pattern in url_patterns if not pattern.startswith('r')) or 
-                                  re.search(r'-p\d+', href))
-                    
-                    if href and has_pattern:
-                        full_url = urljoin(current_url, href)
-                        # Only add if it's from the same domain
-                        if urlparse(full_url).netloc == base_domain:
-                            # Avoid navigation/category links
-                            if not any(skip in href.lower() for skip in ['category', 'collection', 'tag', 'page', 'cart', 'checkout', 'account']):
-                                product_links.add(full_url)
-            
-            # Look for pagination/next page links
-            next_selectors = [
-                "a.next", 
-                ".pagination a[rel='next']", 
-                "a[aria-label='Next']",
-                "a[aria-label='Next page']",
-                ".pagination__item--next a",
-                "a.pagination__next",
-                "link[rel='next']"
-            ]
-            
-            for selector in next_selectors:
-                next_link = soup.select_one(selector)
-                if next_link:
-                    next_href = next_link.get("href")
-                    if next_href:
-                        next_url = urljoin(current_url, next_href)
-                        if next_url not in visited_pages and next_url not in pages_to_visit:
-                            pages_to_visit.append(next_url)
-                        break
-            
-            # Also check for page number links (e.g., ?page=2, ?page=3)
-            page_links = soup.select(".pagination a[href*='page']")
-            for link in page_links:
-                page_href = link.get("href")
-                if page_href:
-                    page_url = urljoin(current_url, page_href)
-                    if page_url not in visited_pages and page_url not in pages_to_visit:
-                        pages_to_visit.append(page_url)
-                    
-        except Exception as e:
-            pass
+    except Exception as e:
+        print(f"Error fetching {category_url}: {e}", file=sys.stderr)
 
     return product_links
 
@@ -355,20 +212,6 @@ def is_simple_product(soup):
         if len(options) > 1:
             return False
     
-    # Multiple "Add to Cart" forms (indicates multiple variants/packages)
-    # This catches custom platforms that list variants as separate forms on the same page
-    add_to_cart_forms = soup.find_all('form', action=lambda x: x and ('cart' in x.lower() or 'add' in x.lower()))
-    if len(add_to_cart_forms) > 1:
-        # Check if they have different product IDs (indicating variants)
-        product_ids = set()
-        for form in add_to_cart_forms:
-            product_id_input = form.find('input', attrs={'name': lambda x: x and 'product' in x.lower()})
-            if product_id_input:
-                product_ids.add(product_id_input.get('value'))
-        # If multiple unique product IDs, it's a configurable product
-        if len(product_ids) > 1:
-            return False
-    
     # Check body classes
     body = soup.select_one("body")
     if body:
@@ -390,12 +233,14 @@ def extract_product_data(url, session=None):
         
         # Check if blocked by Cloudflare
         if resp.status_code == 403 or "Just a moment" in resp.text:
+            print(f"Cloudflare protection detected, retrying...", file=sys.stderr)
             time.sleep(3)
             resp = session.get(url, headers=HEADERS, timeout=15)
         
         soup = BeautifulSoup(resp.text, "html.parser")
 
         if not is_simple_product(soup):
+            print(f"Skipping (not simple): {url}", file=sys.stderr)
             return None
 
         # Name - Universal selectors for all platforms
@@ -566,39 +411,72 @@ def extract_product_data(url, session=None):
         }
 
     except Exception as e:
+        print(f"Error processing {url}: {e}", file=sys.stderr)
         return None
 
 
 def scrape_site(base_url):
+    """Main scraping function."""
+    print("Method 1: Trying sitemap...", file=sys.stderr)
     product_links = get_product_links_from_sitemap(base_url)
     
     if not product_links:
+        print("Method 2: Searching for product pages...", file=sys.stderr)
         category_url = detect_category_page(base_url)
         product_links = get_product_links(category_url)
     
     # If still no products, try scraping the homepage directly
     if not product_links and base_url != category_url:
+        print("Method 3: Trying homepage...", file=sys.stderr)
         product_links = get_product_links(base_url)
+    
+    print(f"\n🔗 Found {len(product_links)} product links", file=sys.stderr)
+    
+    if len(product_links) == 0:
+        print("\n No products found!", file=sys.stderr)
+        print("Possible reasons:", file=sys.stderr)
+        print("  1. The site uses JavaScript to load products (React/Vue/Angular)", file=sys.stderr)
+        print("  2. The site may be blocking automated access", file=sys.stderr)
+        print("  3. Try providing a direct category/product listing page URL", file=sys.stderr)
+        print("\n Tip: Navigate to a product category page in your browser,", file=sys.stderr)
+        print("   copy that URL, and use it with the scraper.\n", file=sys.stderr)
 
     # Use cloudscraper if available, otherwise regular session
     if USE_CLOUDSCRAPER:
+        print(" Using cloudscraper to bypass Cloudflare...", file=sys.stderr)
         session = cloudscraper.create_scraper()
     else:
-        session = requests.Session()
+        print(" Using regular requests (install cloudscraper for better results)...", file=sys.stderr)
+        session = requests.Session() if not USE_CLOUDSCRAPER else None
     
     data = []
-    for url in product_links:
+    skipped = 0
+    for i, url in enumerate(product_links, 1):
+        print(f"Processing {i}/{len(product_links)}: {url}", file=sys.stderr)
         item = extract_product_data(url, session)
         if item:
             data.append(item)
+            print(f"Added: {item.get('name', 'Unknown')[:50]}", file=sys.stderr)
+        else:
+            skipped += 1
         time.sleep(1)  # Delay to avoid rate limiting
+    
+    print(f"\nSummary: {len(data)} simple products, {skipped} skipped", file=sys.stderr)
 
     # Always output JSON
     print(json.dumps(data, indent=2))
 
 
-
 if __name__ == "__main__":
+    print("\n" + "="*60, file=sys.stderr)
+    print("Universal E-Commerce Product Scraper", file=sys.stderr)
+    print("="*60, file=sys.stderr)
+    print("\nThis scraper extracts only simple products.", file=sys.stderr)
+    print("It ignores grouped, bundle, and configurable products.", file=sys.stderr)
+    print("\nSupports: WooCommerce, Shopify, Magento, and custom platforms", file=sys.stderr)
+    print("\nNOTE: For JavaScript-heavy sites (React/Vue/Angular),", file=sys.stderr)
+    print("provide a direct product listing/category page URL.", file=sys.stderr)
+    print("="*60 + "\n", file=sys.stderr)
     
     if len(sys.argv) > 1:
         url = sys.argv[1].strip()
@@ -606,5 +484,8 @@ if __name__ == "__main__":
         url = input("Enter website URL to scrape: ").strip()
     
     if not url:
+        print(" No URL provided. Exiting.", file=sys.stderr)
         sys.exit(1)
+    
+    print(f"\n Starting scrape for: {url}\n", file=sys.stderr)
     scrape_site(url)
