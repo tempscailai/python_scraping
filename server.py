@@ -15,17 +15,19 @@ def run():
             return jsonify({"error": "Missing URL"}), 400
 
         result = scraper.scrape_site(url)
-        return jsonify({"status": "ok", "result": result}), 200
+
+        # 👉 RETURN RAW SCRAPER OUTPUT (NO status, NO wrapper)
+        return jsonify(result), 200
 
     # GET query param
     url = request.args.get("url")
     if not url:
-        return jsonify({
-            "error": "Please pass ?url=https://sitename.com OR send POST JSON {\"url\": \"...\"}"
-        }), 400
+        return jsonify({"error": "Missing URL"}), 400
 
     result = scraper.scrape_site(url)
-    return jsonify({"status": "ok", "result": result}), 200
+
+    # 👉 RETURN RAW ARRAY DIRECTLY
+    return jsonify(result), 200
 
 
 if __name__ == "__main__":
