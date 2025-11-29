@@ -6,24 +6,22 @@ app = Flask(__name__)
 
 @app.route("/", methods=["GET", "POST"])
 def run():
-    # ---- POST JSON BODY ----
+    # POST JSON body
     if request.method == "POST":
         data = request.get_json(silent=True) or {}
-        url = data.get("URL") or data.get("url")
+        url = data.get("url") or data.get("URL")
 
         if not url:
-            return jsonify({
-                "error": "Missing URL in JSON body"
-            }), 400
+            return jsonify({"error": "Missing URL"}), 400
 
         result = scraper.scrape_site(url)
         return jsonify({"status": "ok", "result": result}), 200
 
-    # ---- GET QUERY PARAM ----
+    # GET query param
     url = request.args.get("url")
     if not url:
         return jsonify({
-            "error": "Please pass ?url=https://sitename.com OR send POST JSON {\"URL\": \"...\"}"
+            "error": "Please pass ?url=https://sitename.com OR send POST JSON {\"url\": \"...\"}"
         }), 400
 
     result = scraper.scrape_site(url)
